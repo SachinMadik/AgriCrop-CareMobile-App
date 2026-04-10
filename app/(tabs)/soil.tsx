@@ -1,8 +1,13 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useEffect, useRef } from "react";
+import * as Location from "expo-location";
+import { useEffect, useRef, useState } from "react";
 import {
+  ActivityIndicator,
+  Alert,
   Animated,
+  Modal,
   Platform,
+  Pressable,
   ScrollView,
   StatusBar,
   StyleSheet,
@@ -10,6 +15,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { API_BASE } from "../../services/api";
 import { theme } from "../../theme";
 
 type Status = "SAFE" | "WARNING" | "CRITICAL" | "LOW";
@@ -50,101 +56,109 @@ const STATUS_CONFIG: Record<
   },
 };
 
-const NUTRIENTS: Nutrient[] = [
-  {
-    id: "N",
-    name: "Nitrogen",
-    symbol: "N",
-    value: 42,
-    unit: "kg/ha",
-    min: 20,
-    max: 80,
-    optimal: 50,
-    status: "WARNING",
-    description:
-      "Slightly below optimal for tomato cultivation. Nitrogen supports leaf growth and chlorophyll production.",
-    action: "Apply 8 kg/ha urea within the next 5 days.",
-  },
-  {
-    id: "P",
-    name: "Phosphorus",
-    symbol: "P",
-    value: 28,
-    unit: "kg/ha",
-    min: 15,
-    max: 60,
-    optimal: 35,
-    status: "SAFE",
-    description:
-      "Phosphorus levels are within the healthy range. Supports root development and energy transfer.",
-  },
-  {
-    id: "K",
-    name: "Potassium",
-    symbol: "K",
-    value: 65,
-    unit: "kg/ha",
-    min: 30,
-    max: 100,
-    optimal: 70,
-    status: "SAFE",
-    description:
-      "Good potassium levels support fruit quality, disease resistance, and water regulation.",
-  },
-  {
-    id: "pH",
-    name: "Soil pH",
-    symbol: "pH",
-    value: 6.2,
-    unit: "",
-    min: 5.5,
-    max: 7.5,
-    optimal: 6.5,
-    status: "SAFE",
-    description:
-      "Ideal pH for nutrient availability. Most micronutrients are accessible in this range.",
-  },
-  {
-    id: "OM",
-    name: "Organic Matter",
-    symbol: "OM",
-    value: 1.4,
-    unit: "%",
-    min: 1.0,
-    max: 5.0,
-    optimal: 3.0,
-    status: "LOW",
-    description:
-      "Organic matter is on the lower end. Higher OM improves water retention, nutrient holding, and microbial activity.",
-    action: "Incorporate compost or green manure before next season.",
-  },
-  {
-    id: "EC",
-    name: "Electrical Conductivity",
-    symbol: "EC",
-    value: 2.8,
-    unit: "dS/m",
-    min: 0,
-    max: 4.0,
-    optimal: 2.0,
-    status: "WARNING",
-    description:
-      "EC approaching the upper tolerance limit. High EC may cause osmotic stress and reduce water uptake.",
-    action: "Flush soil with clean water and reduce fertilizer input.",
-  },
-];
-
-const SOIL_HEALTH_SCORE = 72;
-
-const LEACHING_HISTORY = [
-  { label: "Mar 20", n: 38, p: 27, k: 62 },
-  { label: "Mar 21", n: 40, p: 28, k: 63 },
-  { label: "Mar 22", n: 41, p: 27, k: 65 },
-  { label: "Mar 23", n: 42, p: 28, k: 66 },
-  { label: "Mar 24", n: 42, p: 28, k: 65 },
-];
+const NUTRIENTS_SEED: Nutrient[] = [];
+const SOIL_HEALTH_SCORE_SEED = 0;
+const LEACHING_HISTORY_SEED: any[] = [];
 
 export default function Soil() {
+  const [nutrients, setNutrients] = useState<Nutrient[]>([]);
+  const [healthScore, setHealthScore] = useState(0);
+  const [trend, setTrend] = useState<any[]>([]);
+  const [recommendations, setRecommendations] = useState<any[]>([]);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const [n, h, t, r] = await Promise.all([
+          fetch(`${API_BASE}/soil`).then((r) => r.json()),
+          fetch(`${API_BASE}/soil/health-score`).then((r) => r.json()),
+          fetch(`${API_BASE}/soil/trend`).then((r) => r.json()),
+          fetch(`${API_BASE}/soil/recommendations`).then((r) => r.json()),
+        ]);
+        setNutrients(n);
+        setHealthScore(h.score ?? 0);
+        setTrend(t);
+        setRecommendations(r);
+      } catch (e) {
+        console.log("Soil fetch error", e);
+      }
+    }
+    load();
+  }, []);
+
+  async function runSoilTest() {
+    try {
+      const res = await fetch(`${API_BASE}/soil/test`, { method: "POST" });
+      const data = await res.json();
+      Alert.alert("Soil Test", data.message);
+    } catch (e) {
+      Alert.alert("Error", "Could not trigger soil test.");
+    }
+  }
+
+  const safeCount = nutrients.filter((n) => n.status === "SAFE").length;
+  const warnCount = nutrients.filter((n) => n.status === "WARNING").length;
+  const lowCount = nutrients.filter((n) => n.status === "LOW").length;
+
+  // ── Leaching Report ────────────────────────────────────────────────────────
+  const [leachingReport, setLeachingReport] = useState<any>(null);
+  const [leachingLoading, setLeachingLoading] = useState(false);
+  const [showLeaching, setShowLeaching] = useState(false);
+
+  async function generateLeachingReport() {
+    setLeachingLoading(true);
+    try {
+      const { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== "granted") {
+        Alert.alert("Permission Denied", "Location is needed to fetch live weather for the report.");
+        return;
+      }
+      const loc = await Location.getCurrentPositionAsync({});
+      const res = await fetch(`${API_BASE}/leaching-report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          latitude: loc.coords.latitude,
+          longitude: loc.coords.longitude,
+          cropType: "tomato",
+          soilType: "sandy loam",
+          season: "kharif",
+          fieldSize: "4.2 ha",
+        }),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const data = await res.json();
+      setLeachingReport(data);
+      setShowLeaching(true);
+    } catch (e) {
+      console.log("Leaching report error", e);
+      Alert.alert("Error", "Could not generate report. Make sure the backend is running.");
+    } finally {
+      setLeachingLoading(false);
+    }
+  }
+
+  async function reload() {
+    setNutrients([]);
+    setHealthScore(0);
+    setTrend([]);
+    setRecommendations([]);
+    try {
+      const [n, h, t, r] = await Promise.all([
+        fetch(`${API_BASE}/soil`).then((r) => r.json()),
+        fetch(`${API_BASE}/soil/health-score`).then((r) => r.json()),
+        fetch(`${API_BASE}/soil/trend`).then((r) => r.json()),
+        fetch(`${API_BASE}/soil/recommendations`).then((r) => r.json()),
+      ]);
+      setNutrients(n);
+      setHealthScore(h.score ?? 0);
+      setTrend(t);
+      setRecommendations(r);
+    } catch (e) {
+      console.log("Soil reload error", e);
+    }
+  }
+
   return (
     <View style={styles.root}>
       <StatusBar barStyle="light-content" />
@@ -157,7 +171,7 @@ export default function Soil() {
             Sandy loam · Last updated 1 hr ago
           </Text>
         </View>
-        <TouchableOpacity style={styles.iconBtn}>
+        <TouchableOpacity style={styles.iconBtn} onPress={reload}>
           <Ionicons
             name="refresh-outline"
             size={20}
@@ -169,38 +183,43 @@ export default function Soil() {
       <ScrollView showsVerticalScrollIndicator={false}>
         {/* Health Score */}
         <View style={styles.scoreSection}>
-          <HealthGauge score={SOIL_HEALTH_SCORE} />
+          <HealthGauge score={healthScore} />
           <View style={styles.scoreMeta}>
             <Text style={styles.scoreLabel}>Overall Soil Health</Text>
-            <Text style={styles.scoreSub}>2 nutrients need attention</Text>
+            <Text style={styles.scoreSub}>{warnCount + lowCount} nutrients need attention</Text>
             <View style={styles.scoreStatusRow}>
-              <StatusPill count={3} label="Optimal" color="#66bb6a" />
-              <StatusPill count={2} label="Warning" color="#f9a825" />
-              <StatusPill count={1} label="Low" color="#42a5f5" />
+              <StatusPill count={safeCount} label="Optimal" color="#66bb6a" />
+              <StatusPill count={warnCount} label="Warning" color="#f9a825" />
+              <StatusPill count={lowCount} label="Low" color="#42a5f5" />
             </View>
           </View>
         </View>
 
         {/* Actions */}
         <View style={styles.actions}>
-          <TouchableOpacity style={styles.primaryBtn}>
+          <TouchableOpacity style={styles.primaryBtn} onPress={runSoilTest}>
             <Ionicons name="flask-outline" size={16} color="white" />
             <Text style={styles.primaryBtnText}>Run Soil Test</Text>
           </TouchableOpacity>
-          <TouchableOpacity style={styles.secondaryBtn}>
-            <Ionicons
-              name="document-text-outline"
-              size={16}
-              color={theme.colors.accent}
-            />
-            <Text style={styles.secondaryBtnText}>Leaching Report</Text>
+          <TouchableOpacity
+            style={[styles.secondaryBtn, leachingLoading && { opacity: 0.6 }]}
+            onPress={generateLeachingReport}
+            disabled={leachingLoading}
+            activeOpacity={0.7}
+          >
+            {leachingLoading
+              ? <ActivityIndicator size="small" color={theme.colors.accent} />
+              : <Ionicons name="document-text-outline" size={16} color={theme.colors.accent} />}
+            <Text style={styles.secondaryBtnText}>
+              {leachingLoading ? "Generating..." : "Leaching Report"}
+            </Text>
           </TouchableOpacity>
         </View>
 
         {/* Nutrients */}
         <View style={styles.section}>
           <SectionHeader title="Nutrient Analysis" />
-          {NUTRIENTS.map((n) => (
+          {nutrients.map((n) => (
             <NutrientCard key={n.id} nutrient={n} />
           ))}
         </View>
@@ -215,7 +234,7 @@ export default function Soil() {
               <LegendItem color="#42a5f5" label="Potassium (K)" />
             </View>
             <View style={styles.chartBody}>
-              {LEACHING_HISTORY.map((entry, i) => (
+              {trend.map((entry, i) => (
                 <View key={i} style={styles.chartCol}>
                   <MiniBar value={entry.n} max={100} color="#44c2a8" />
                   <MiniBar value={entry.p} max={100} color="#f9a825" />
@@ -231,23 +250,23 @@ export default function Soil() {
         <View style={styles.section}>
           <SectionHeader title="AI Recommendations" />
           <View style={styles.recCard}>
-            {NUTRIENTS.filter((n) => n.action).map((n) => (
-              <View key={n.id} style={styles.recRow}>
+            {recommendations.map((r) => (
+              <View key={r.nutrientId} style={styles.recRow}>
                 <View
                   style={[
                     styles.recIcon,
-                    { backgroundColor: STATUS_CONFIG[n.status].bg },
+                    { backgroundColor: STATUS_CONFIG[r.status as Status].bg },
                   ]}
                 >
                   <Ionicons
-                    name={STATUS_CONFIG[n.status].icon as any}
+                    name={STATUS_CONFIG[r.status as Status].icon as any}
                     size={16}
-                    color={STATUS_CONFIG[n.status].color}
+                    color={STATUS_CONFIG[r.status as Status].color}
                   />
                 </View>
                 <View style={{ flex: 1 }}>
-                  <Text style={styles.recTitle}>{n.name}</Text>
-                  <Text style={styles.recAction}>{n.action}</Text>
+                  <Text style={styles.recTitle}>{r.nutrientName}</Text>
+                  <Text style={styles.recAction}>{r.action}</Text>
                 </View>
               </View>
             ))}
@@ -256,11 +275,20 @@ export default function Soil() {
 
         <View style={{ height: 32 }} />
       </ScrollView>
+
+      {/* ── Leaching Report Modal ── */}
+      <Modal visible={showLeaching} transparent animationType="slide" onRequestClose={() => setShowLeaching(false)}>
+        <Pressable style={lStyles.overlay} onPress={() => setShowLeaching(false)} />
+        <View style={lStyles.sheet}>
+          <View style={lStyles.handle} />
+          <ScrollView showsVerticalScrollIndicator={false}>
+            {leachingReport && <LeachingReportView report={leachingReport} onClose={() => setShowLeaching(false)} />}
+          </ScrollView>
+        </View>
+      </Modal>
     </View>
   );
 }
-
-/* ── COMPONENTS ── */
 
 function HealthGauge({ score }: { score: number }) {
   const color = score >= 80 ? "#66bb6a" : score >= 60 ? "#f9a825" : "#ef5350";
@@ -645,4 +673,205 @@ const styles = StyleSheet.create({
     marginBottom: 2,
   },
   recAction: { color: "#5a7a72", fontSize: 12, lineHeight: 17 },
+});
+
+// ─── Leaching Report Component ────────────────────────────────────────────────
+
+const RISK_COLOR: Record<string, string> = {
+  high: "#ef5350",
+  medium: "#f9a825",
+  low: "#66bb6a",
+};
+
+const RISK_BG: Record<string, string> = {
+  high: "#3a0f0f",
+  medium: "#2e250f",
+  low: "#0f2e14",
+};
+
+function LeachingReportView({ report, onClose }: { report: any; onClose: () => void }) {
+  const riskColor = RISK_COLOR[report.riskLevel] ?? "#66bb6a";
+  const riskBg    = RISK_BG[report.riskLevel]    ?? "#0f2e14";
+
+  return (
+    <View style={lStyles.container}>
+      {/* Title */}
+      <View style={lStyles.titleRow}>
+        <View>
+          <Text style={lStyles.title}>Leaching Report</Text>
+          <Text style={lStyles.subtitle}>{report.inputs?.cropType} · {report.inputs?.soilType} · {report.inputs?.season}</Text>
+        </View>
+        <TouchableOpacity onPress={onClose} activeOpacity={0.7}>
+          <Ionicons name="close-circle" size={26} color="#3d6e64" />
+        </TouchableOpacity>
+      </View>
+
+      {/* Risk Score Card */}
+      <View style={[lStyles.riskCard, { backgroundColor: riskBg, borderColor: `${riskColor}40` }]}>
+        <View style={lStyles.riskLeft}>
+          <Text style={[lStyles.riskLevel, { color: riskColor }]}>{report.riskLevel.toUpperCase()} RISK</Text>
+          <Text style={lStyles.riskScore}>{report.riskScore}<Text style={lStyles.riskScoreUnit}>/100</Text></Text>
+          <Text style={lStyles.riskDesc}>Nutrient Leaching Risk Score</Text>
+        </View>
+        <View style={lStyles.riskRight}>
+          <Ionicons name={report.riskLevel === "high" ? "warning" : report.riskLevel === "medium" ? "alert-circle" : "checkmark-circle"} size={52} color={`${riskColor}66`} />
+        </View>
+      </View>
+
+      {/* Nutrient Loss Estimates */}
+      <Text style={lStyles.sectionTitle}>Estimated Nutrient Loss</Text>
+      <View style={lStyles.lossRow}>
+        <LossCard label="Nitrogen (N)" value={report.nitrogenLossPercent} color="#44c2a8" />
+        <LossCard label="Phosphorus (P)" value={report.phosphorusLossPercent} color="#f9a825" />
+        <LossCard label="Potassium (K)" value={report.potassiumLossPercent} color="#42a5f5" />
+      </View>
+
+      {/* Live Weather */}
+      <Text style={lStyles.sectionTitle}>Live Weather Used</Text>
+      <View style={lStyles.weatherRow}>
+        <WeatherChip icon="rainy" label="Rainfall" value={`${report.weather?.rainfall ?? 0} mm`} />
+        <WeatherChip icon="thermometer" label="Temp" value={`${Math.round(report.weather?.temperature ?? 0)}°C`} />
+        <WeatherChip icon="water" label="Humidity" value={`${report.weather?.humidity ?? 0}%`} />
+      </View>
+
+      {/* Contributing Factors */}
+      <Text style={lStyles.sectionTitle}>Contributing Factors</Text>
+      <View style={lStyles.factorsCard}>
+        {report.factors && Object.entries(report.factors).filter(([k]) => k !== "corrections").map(([key, val]: any) => (
+          <View key={key} style={lStyles.factorRow}>
+            <View style={lStyles.factorLeft}>
+              <Text style={lStyles.factorName}>{key.replace(/([A-Z])/g, " $1").replace(/^./, (s: string) => s.toUpperCase())}</Text>
+              <Text style={lStyles.factorValue}>{val.value}</Text>
+            </View>
+            <View style={lStyles.factorRight}>
+              <View style={lStyles.factorBar}>
+                <View style={[lStyles.factorFill, { width: `${Math.round(val.factor * 100)}%`, backgroundColor: val.factor >= 0.7 ? "#ef5350" : val.factor >= 0.4 ? "#f9a825" : "#66bb6a" }]} />
+              </View>
+              <Text style={lStyles.factorWeight}>{val.weight}</Text>
+            </View>
+          </View>
+        ))}
+        {report.factors?.corrections && (
+          <View style={lStyles.correctionRow}>
+            <Ionicons name="thermometer" size={12} color="#3d6e64" />
+            <Text style={lStyles.correctionText}>Temp: {report.factors.corrections.temperature} · Humidity: {report.factors.corrections.humidity} · Season: {report.factors.corrections.season}</Text>
+          </View>
+        )}
+      </View>
+
+      {/* Recommendations */}
+      <Text style={lStyles.sectionTitle}>Recommendations</Text>
+      {(report.recommendations ?? []).map((rec: any, i: number) => {
+        const pColor = rec.priority === "Urgent" ? "#ef5350" : rec.priority === "High" ? "#ff8a65" : rec.priority === "Medium" ? "#f9a825" : "#66bb6a";
+        return (
+          <View key={i} style={lStyles.recCard}>
+            <View style={lStyles.recHeader}>
+              <View style={[lStyles.recIcon, { backgroundColor: `${pColor}18` }]}>
+                <Ionicons name={rec.icon as any} size={16} color={pColor} />
+              </View>
+              <View style={{ flex: 1 }}>
+                <Text style={lStyles.recCategory}>{rec.category}</Text>
+                <View style={[lStyles.priorityBadge, { backgroundColor: `${pColor}18` }]}>
+                  <Text style={[lStyles.priorityText, { color: pColor }]}>{rec.priority}</Text>
+                </View>
+              </View>
+            </View>
+            <Text style={lStyles.recAction}>{rec.action}</Text>
+            <Text style={lStyles.recDetail}>{rec.detail}</Text>
+          </View>
+        );
+      })}
+
+      <Text style={lStyles.generatedAt}>Generated: {new Date(report.generatedAt).toLocaleString()}</Text>
+      <View style={{ height: 40 }} />
+    </View>
+  );
+}
+
+function LossCard({ label, value, color }: { label: string; value: number; color: string }) {
+  return (
+    <View style={[lStyles.lossCard, { borderColor: `${color}30` }]}>
+      <Text style={[lStyles.lossValue, { color }]}>{value}%</Text>
+      <Text style={lStyles.lossLabel}>{label}</Text>
+    </View>
+  );
+}
+
+function WeatherChip({ icon, label, value }: { icon: string; label: string; value: string }) {
+  return (
+    <View style={lStyles.weatherChip}>
+      <Ionicons name={icon as any} size={14} color={theme.colors.accent} />
+      <Text style={lStyles.weatherValue}>{value}</Text>
+      <Text style={lStyles.weatherLabel}>{label}</Text>
+    </View>
+  );
+}
+
+// ─── Leaching Modal Styles ────────────────────────────────────────────────────
+
+const lStyles = StyleSheet.create({
+  overlay: { ...StyleSheet.absoluteFillObject, backgroundColor: "rgba(0,0,0,0.65)" },
+  sheet: {
+    position: "absolute", bottom: 0, left: 0, right: 0,
+    backgroundColor: "#061c17", borderTopLeftRadius: 24, borderTopRightRadius: 24,
+    maxHeight: "92%", borderWidth: 1, borderColor: "#1a4036",
+  },
+  handle: { width: 40, height: 4, borderRadius: 2, backgroundColor: "#1a4036", alignSelf: "center", marginTop: 12, marginBottom: 4 },
+  container: { padding: 20 },
+
+  titleRow: { flexDirection: "row", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 16 },
+  title: { color: theme.colors.text, fontSize: 20, fontWeight: "800" },
+  subtitle: { color: "#3d6e64", fontSize: 12, marginTop: 2 },
+
+  riskCard: {
+    flexDirection: "row", borderRadius: 18, borderWidth: 1,
+    padding: 18, marginBottom: 20, alignItems: "center",
+  },
+  riskLeft: { flex: 1 },
+  riskLevel: { fontSize: 11, fontWeight: "800", letterSpacing: 1, marginBottom: 4 },
+  riskScore: { fontSize: 48, fontWeight: "900", color: "white", lineHeight: 52 },
+  riskScoreUnit: { fontSize: 18, fontWeight: "400", color: "#5a8a82" },
+  riskDesc: { color: "#5a8a82", fontSize: 12, marginTop: 4 },
+  riskRight: { paddingLeft: 12 },
+
+  sectionTitle: { color: theme.colors.text, fontSize: 14, fontWeight: "700", marginBottom: 10, marginTop: 4 },
+
+  lossRow: { flexDirection: "row", gap: 10, marginBottom: 16 },
+  lossCard: {
+    flex: 1, backgroundColor: "#0c2b24", borderRadius: 14, borderWidth: 1,
+    padding: 12, alignItems: "center",
+  },
+  lossValue: { fontSize: 22, fontWeight: "900" },
+  lossLabel: { color: "#3d6e64", fontSize: 9, fontWeight: "600", textAlign: "center", marginTop: 3 },
+
+  weatherRow: { flexDirection: "row", gap: 8, marginBottom: 16 },
+  weatherChip: {
+    flex: 1, backgroundColor: "#0c2b24", borderRadius: 12, borderWidth: 1,
+    borderColor: "#123a32", padding: 10, alignItems: "center", gap: 3,
+  },
+  weatherValue: { color: "white", fontSize: 13, fontWeight: "700" },
+  weatherLabel: { color: "#3d6e64", fontSize: 9 },
+
+  factorsCard: { backgroundColor: "#0c2b24", borderRadius: 16, borderWidth: 1, borderColor: "#123a32", padding: 14, marginBottom: 16 },
+  factorRow: { flexDirection: "row", alignItems: "center", marginBottom: 12 },
+  factorLeft: { width: 120 },
+  factorName: { color: theme.colors.text, fontSize: 12, fontWeight: "600" },
+  factorValue: { color: "#3d6e64", fontSize: 10, marginTop: 1 },
+  factorRight: { flex: 1, flexDirection: "row", alignItems: "center", gap: 8 },
+  factorBar: { flex: 1, height: 6, backgroundColor: "#1a3d35", borderRadius: 3, overflow: "hidden" },
+  factorFill: { height: "100%", borderRadius: 3 },
+  factorWeight: { color: "#3d6e64", fontSize: 10, width: 28, textAlign: "right" },
+  correctionRow: { flexDirection: "row", alignItems: "center", gap: 6, marginTop: 4, paddingTop: 10, borderTopWidth: 1, borderTopColor: "#0f2e28" },
+  correctionText: { color: "#3d6e64", fontSize: 10, flex: 1 },
+
+  recCard: { backgroundColor: "#0c2b24", borderRadius: 14, borderWidth: 1, borderColor: "#123a32", padding: 14, marginBottom: 10 },
+  recHeader: { flexDirection: "row", alignItems: "flex-start", gap: 10, marginBottom: 8 },
+  recIcon: { width: 34, height: 34, borderRadius: 10, alignItems: "center", justifyContent: "center" },
+  recCategory: { color: theme.colors.text, fontSize: 13, fontWeight: "700", marginBottom: 4 },
+  priorityBadge: { alignSelf: "flex-start", paddingHorizontal: 8, paddingVertical: 2, borderRadius: 10 },
+  priorityText: { fontSize: 10, fontWeight: "800" },
+  recAction: { color: "#9fbdb5", fontSize: 13, lineHeight: 18, marginBottom: 4 },
+  recDetail: { color: "#5a7a72", fontSize: 11, lineHeight: 16 },
+
+  generatedAt: { color: "#1a4036", fontSize: 10, textAlign: "center", marginTop: 8 },
 });

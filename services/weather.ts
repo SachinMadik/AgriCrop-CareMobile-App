@@ -1,21 +1,15 @@
-const API_KEY = "63b6da1735938cc22e1110802dada21f";
+import { API_BASE } from "./api";
 
 export async function getWeather(lat: number, lon: number) {
+  const response = await fetch(`${API_BASE}/weather?lat=${lat}&lon=${lon}`);
+  if (!response.ok) throw new Error("Failed to fetch weather data");
+  return response.json();
+}
+
+export async function getForecast(lat: number, lon: number) {
   const response = await fetch(
-    `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&units=metric&appid=${API_KEY}`,
+    `${API_BASE}/weather/forecast?lat=${lat}&lon=${lon}`,
   );
-
-  if (!response.ok) {
-    throw new Error("Failed to fetch weather data");
-  }
-
-  const data = await response.json();
-
-  return {
-    temperature: data.main?.temp ?? 0,
-    humidity: data.main?.humidity ?? 0,
-    rainfall: data.rain?.["1h"] ?? 0,
-    windSpeed: data.wind?.speed ?? 0,
-    cloudCover: data.clouds?.all ?? 0,
-  };
+  if (!response.ok) throw new Error("Failed to fetch forecast data");
+  return response.json();
 }

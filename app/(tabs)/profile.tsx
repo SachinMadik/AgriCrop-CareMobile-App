@@ -1,5 +1,5 @@
 import { Ionicons } from "@expo/vector-icons";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import {
   Alert,
   Platform,
@@ -8,67 +8,12 @@ import {
   StyleSheet,
   Switch,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from "react-native";
+import { API_BASE } from "../../services/api";
 import { theme } from "../../theme";
-
-interface FarmStat {
-  icon: string;
-  label: string;
-  value: string;
-  color: string;
-}
-
-const FARM_STATS: FarmStat[] = [
-  { icon: "resize", label: "Farm Area", value: "4.2 ha", color: "#44c2a8" },
-  { icon: "leaf", label: "Crop", value: "Tomato", color: "#66bb6a" },
-  {
-    icon: "partly-sunny",
-    label: "Season",
-    value: "Kharif 2026",
-    color: "#f9a825",
-  },
-  {
-    icon: "shield-checkmark",
-    label: "Disease Free",
-    value: "24 days",
-    color: "#42a5f5",
-  },
-];
-
-interface ProfileField {
-  icon: string;
-  label: string;
-  value: string;
-  editable?: boolean;
-}
-
-const PROFILE_FIELDS: ProfileField[] = [
-  {
-    icon: "person-circle",
-    label: "Farmer Name",
-    value: "Sachchidanand M",
-    editable: true,
-  },
-  {
-    icon: "home",
-    label: "Farm Name",
-    value: "Green Valley Plot",
-    editable: true,
-  },
-  {
-    icon: "leaf",
-    label: "Primary Crop",
-    value: "Tomato (Solanum lycopersicum)",
-    editable: true,
-  },
-  { icon: "layers", label: "Soil Type", value: "Sandy Loam", editable: true },
-  { icon: "location", label: "Coordinates", value: "17.3850°N, 78.4867°E" },
-  { icon: "map", label: "Region", value: "Telangana, India" },
-  { icon: "call", label: "Contact", value: "+91 98765 43210", editable: true },
-  { icon: "id-card", label: "Farmer ID", value: "TG-2026-042813" },
-];
 
 const ALERT_TYPES = [
   { label: "Disease Risk Alerts", desc: "Early warning for disease outbreaks" },
@@ -83,14 +28,95 @@ export default function Profile() {
   const [alertToggles, setAlertToggles] = useState(
     Object.fromEntries(ALERT_TYPES.map((a) => [a.label, true])),
   );
+  const [profile, setProfile] = useState<any>(null);
+  const [stats, setStats] = useState<any>(null);
 
-  function handleEnableNotifications() {
-    setNotificationsEnabled(true);
-    Alert.alert("Notifications Enabled", "You'll receive timely farm alerts.");
+  // Edit mode state
+  const [isEditing, setIsEditing] = useState(false);
+  const [editValues, setEditValues] = useState<any>({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const [p, s, prefs] = await Promise.all([
+          fetch(`${API_BASE}/profile`).then((r) => r.json()),
+          fetch(`${API_BASE}/profile/stats`).then((r) => r.json()),
+          fetch(`${API_BASE}/notifications/preferences`).then((r) => r.json()),
+        ]);
+        setProfile(p);
+        setStats(s);
+        setAlertToggles(prefs);
+      } catch (e) {
+        console.log("Profile fetch error", e);
+      }
+    }
+    load();
+  }, []);
+
+  function handleEdit() {
+    setEditValues({
+      name: profile?.name ?? "",
+      farmName: profile?.farmName ?? "",
+      primaryCrop: profile?.primaryCrop ?? "",
+      soilType: profile?.soilType ?? "",
+      contact: profile?.contact ?? "",
+    });
+    setIsEditing(true);
   }
 
-  function toggleAlert(label: string) {
-    setAlertToggles((prev) => ({ ...prev, [label]: !prev[label] }));
+  function handleCancel() {
+    setEditValues({});
+    setIsEditing(false);
+  }
+
+  async function handleSave() {
+    // Basic validation
+    if (!editValues.name?.trim() || !editValues.farmName?.trim() ||
+        !editValues.primaryCrop?.trim() || !editValues.soilType?.trim() ||
+        !editValues.contact?.trim()) {
+      Alert.alert("Validation Error", "All fields are required.");
+      return;
+    }
+    setSaving(true);
+    try {
+      const res = await fetch(`${API_BASE}/profile`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(editValues),
+      });
+      if (!res.ok) throw new Error("Save failed");
+      const updated = await res.json();
+      setProfile(updated);
+      setIsEditing(false);
+      setEditValues({});
+    } catch (e) {
+      Alert.alert("Error", "Could not save profile. Please try again.");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function handleEnableNotifications() {
+    try {
+      await fetch(`${API_BASE}/notifications/enable`, { method: "POST" });
+      setNotificationsEnabled(true);
+      Alert.alert("Notifications Enabled", "You'll receive timely farm alerts.");
+    } catch (e) {
+      Alert.alert("Error", "Could not enable notifications.");
+    }
+  }
+
+  async function toggleAlert(label: string) {
+    const newVal = !alertToggles[label];
+    setAlertToggles((prev) => ({ ...prev, [label]: newVal }));
+    try {
+      await fetch(`${API_BASE}/notifications/preferences`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ preferences: { [label]: newVal } }),
+      });
+    } catch (e) { console.log(e); }
   }
 
   return (
@@ -100,14 +126,22 @@ export default function Profile() {
       {/* Header */}
       <View style={styles.header}>
         <Text style={styles.title}>Farm Profile</Text>
-        <TouchableOpacity style={styles.editBtn}>
-          <Ionicons
-            name="create-outline"
-            size={18}
-            color={theme.colors.accent}
-          />
-          <Text style={styles.editText}>Edit</Text>
-        </TouchableOpacity>
+        {isEditing ? (
+          <View style={styles.editActions}>
+            <TouchableOpacity style={styles.cancelBtn} onPress={handleCancel}>
+              <Text style={styles.cancelText}>Cancel</Text>
+            </TouchableOpacity>
+            <TouchableOpacity style={styles.saveBtn} onPress={handleSave} disabled={saving}>
+              <Ionicons name="checkmark" size={16} color="white" />
+              <Text style={styles.saveText}>{saving ? "Saving…" : "Save"}</Text>
+            </TouchableOpacity>
+          </View>
+        ) : (
+          <TouchableOpacity style={styles.editBtn} onPress={handleEdit}>
+            <Ionicons name="create-outline" size={18} color={theme.colors.accent} />
+            <Text style={styles.editText}>Edit</Text>
+          </TouchableOpacity>
+        )}
       </View>
 
       <ScrollView showsVerticalScrollIndicator={false}>
@@ -117,13 +151,11 @@ export default function Profile() {
             <Text style={styles.avatarInitials}>SM</Text>
           </View>
           <View style={styles.identityInfo}>
-            <Text style={styles.farmerName}>Sachchidanand M</Text>
+            <Text style={styles.farmerName}>{profile?.name ?? "Sachchidanand M"}</Text>
             <Text style={styles.farmerSub}>Verified Farmer · Since 2019</Text>
             <View style={styles.verifiedRow}>
               <Ionicons name="shield-checkmark" size={13} color="#44c2a8" />
-              <Text style={styles.verifiedText}>
-                KYC Verified · Premium Plan
-              </Text>
+              <Text style={styles.verifiedText}>KYC Verified · Premium Plan</Text>
             </View>
           </View>
           <View style={styles.planBadge}>
@@ -131,37 +163,63 @@ export default function Profile() {
           </View>
         </View>
 
-        {/* Stats Grid */}
         <View style={styles.statsGrid}>
-          {FARM_STATS.map((stat, i) => (
-            <View key={i} style={styles.statCard}>
-              <View
-                style={[
-                  styles.statIcon,
-                  { backgroundColor: `${stat.color}18` },
-                ]}
-              >
-                <Ionicons
-                  name={stat.icon as any}
-                  size={18}
-                  color={stat.color}
-                />
-              </View>
-              <Text style={styles.statValue}>{stat.value}</Text>
-              <Text style={styles.statLabel}>{stat.label}</Text>
+          <View style={styles.statCard}>
+            <View style={[styles.statIcon, { backgroundColor: "#44c2a818" }]}>
+              <Ionicons name="resize" size={18} color="#44c2a8" />
             </View>
-          ))}
+            <Text style={styles.statValue}>{stats?.farmArea ?? "4.2 ha"}</Text>
+            <Text style={styles.statLabel}>Farm Area</Text>
+          </View>
+          <View style={styles.statCard}>
+            <View style={[styles.statIcon, { backgroundColor: "#66bb6a18" }]}>
+              <Ionicons name="leaf" size={18} color="#66bb6a" />
+            </View>
+            <Text style={styles.statValue}>{stats?.crop?.split(" ")[0] ?? "Tomato"}</Text>
+            <Text style={styles.statLabel}>Crop</Text>
+          </View>
+          <View style={styles.statCard}>
+            <View style={[styles.statIcon, { backgroundColor: "#f9a82518" }]}>
+              <Ionicons name="partly-sunny" size={18} color="#f9a825" />
+            </View>
+            <Text style={styles.statValue}>{stats?.season ?? "Kharif 2026"}</Text>
+            <Text style={styles.statLabel}>Season</Text>
+          </View>
+          <View style={styles.statCard}>
+            <View style={[styles.statIcon, { backgroundColor: "#42a5f518" }]}>
+              <Ionicons name="shield-checkmark" size={18} color="#42a5f5" />
+            </View>
+            <Text style={styles.statValue}>{stats?.diseaseFreeDays ?? 24} days</Text>
+            <Text style={styles.statLabel}>Disease Free</Text>
+          </View>
         </View>
 
         {/* Profile Details */}
         <View style={styles.section}>
           <SectionHeader title="Farm Details" />
           <View style={styles.card}>
-            {PROFILE_FIELDS.map((field, i) => (
+            {[
+              { icon: "person-circle", label: "Farmer Name", key: "name", editable: true },
+              { icon: "home", label: "Farm Name", key: "farmName", editable: true },
+              { icon: "leaf", label: "Primary Crop", key: "primaryCrop", editable: true },
+              { icon: "layers", label: "Soil Type", key: "soilType", editable: true },
+              { icon: "location", label: "Coordinates", key: "coordinates" },
+              { icon: "map", label: "Region", key: "region" },
+              { icon: "call", label: "Contact", key: "contact", editable: true },
+              { icon: "id-card", label: "Farmer ID", key: "farmerId" },
+            ].map((field, i, arr) => (
               <ProfileRow
                 key={i}
-                field={field}
-                isLast={i === PROFILE_FIELDS.length - 1}
+                icon={field.icon}
+                label={field.label}
+                value={profile?.[field.key] ?? "—"}
+                editable={!!field.editable}
+                isLast={i === arr.length - 1}
+                isEditing={isEditing && !!field.editable}
+                editValue={editValues[field.key] ?? ""}
+                onChangeText={(text: string) =>
+                  setEditValues((prev: any) => ({ ...prev, [field.key]: text }))
+                }
               />
             ))}
           </View>
@@ -174,39 +232,25 @@ export default function Profile() {
           {!notificationsEnabled ? (
             <View style={styles.notifPrompt}>
               <View style={styles.notifIcon}>
-                <Ionicons
-                  name="notifications-outline"
-                  size={28}
-                  color="#f9a825"
-                />
+                <Ionicons name="notifications-outline" size={28} color="#f9a825" />
               </View>
               <Text style={styles.notifPromptTitle}>Enable Smart Alerts</Text>
               <Text style={styles.notifPromptSub}>
                 Get real-time warnings for disease outbreaks, weather events,
                 and spray schedules directly on your phone.
               </Text>
-              <TouchableOpacity
-                style={styles.enableBtn}
-                onPress={handleEnableNotifications}
-              >
+              <TouchableOpacity style={styles.enableBtn} onPress={handleEnableNotifications}>
                 <Ionicons name="notifications" size={16} color="white" />
-                <Text style={styles.enableBtnText}>
-                  Enable Push Notifications
-                </Text>
+                <Text style={styles.enableBtnText}>Enable Push Notifications</Text>
               </TouchableOpacity>
-              <Text style={styles.permNote}>
-                Notification permission required · No spam
-              </Text>
+              <Text style={styles.permNote}>Notification permission required · No spam</Text>
             </View>
           ) : (
             <View style={styles.card}>
               {ALERT_TYPES.map((alert, i) => (
                 <View
                   key={i}
-                  style={[
-                    styles.toggleRow,
-                    i < ALERT_TYPES.length - 1 && styles.toggleBorder,
-                  ]}
+                  style={[styles.toggleRow, i < ALERT_TYPES.length - 1 && styles.toggleBorder]}
                 >
                   <View style={{ flex: 1 }}>
                     <Text style={styles.toggleLabel}>{alert.label}</Text>
@@ -215,15 +259,8 @@ export default function Profile() {
                   <Switch
                     value={alertToggles[alert.label]}
                     onValueChange={() => toggleAlert(alert.label)}
-                    trackColor={{
-                      false: "#1a3d35",
-                      true: "rgba(68,194,168,0.4)",
-                    }}
-                    thumbColor={
-                      alertToggles[alert.label]
-                        ? theme.colors.accent
-                        : "#2d5a52"
-                    }
+                    trackColor={{ false: "#1a3d35", true: "rgba(68,194,168,0.4)" }}
+                    thumbColor={alertToggles[alert.label] ? theme.colors.accent : "#2d5a52"}
                   />
                 </View>
               ))}
@@ -237,9 +274,7 @@ export default function Profile() {
           <View style={styles.subCard}>
             <View style={styles.subLeft}>
               <Text style={styles.subPlan}>CropGuard Pro</Text>
-              <Text style={styles.subDetail}>
-                Renews April 25, 2026 · ₹499/month
-              </Text>
+              <Text style={styles.subDetail}>Renews April 25, 2026 · ₹499/month</Text>
             </View>
             <TouchableOpacity style={styles.manageBtn}>
               <Text style={styles.manageBtnText}>Manage</Text>
@@ -276,22 +311,37 @@ function SectionHeader({ title }: { title: string }) {
 }
 
 function ProfileRow({
-  field,
-  isLast,
+  icon, label, value, editable, isLast, isEditing, editValue, onChangeText,
 }: {
-  field: ProfileField;
+  icon: string;
+  label: string;
+  value: string;
+  editable: boolean;
   isLast: boolean;
+  isEditing: boolean;
+  editValue: string;
+  onChangeText: (text: string) => void;
 }) {
   return (
     <View style={[styles.profileRow, !isLast && styles.rowBorder]}>
       <View style={styles.rowIcon}>
-        <Ionicons name={field.icon as any} size={15} color="#3d6e64" />
+        <Ionicons name={icon as any} size={15} color="#3d6e64" />
       </View>
       <View style={styles.rowContent}>
-        <Text style={styles.rowLabel}>{field.label}</Text>
-        <Text style={styles.rowValue}>{field.value}</Text>
+        <Text style={styles.rowLabel}>{label}</Text>
+        {isEditing ? (
+          <TextInput
+            style={styles.rowInput}
+            value={editValue}
+            onChangeText={onChangeText}
+            placeholderTextColor="#3d6e64"
+            autoCapitalize="none"
+          />
+        ) : (
+          <Text style={styles.rowValue}>{value}</Text>
+        )}
       </View>
-      {field.editable && <Ionicons name="pencil" size={13} color="#1a4036" />}
+      {editable && !isEditing && <Ionicons name="pencil" size={13} color="#1a4036" />}
     </View>
   );
 }
@@ -327,6 +377,26 @@ const styles = StyleSheet.create({
   },
   editText: { color: theme.colors.accent, fontSize: 13, fontWeight: "700" },
 
+  editActions: { flexDirection: "row", gap: 8, alignItems: "center" },
+  cancelBtn: {
+    paddingHorizontal: 12,
+    paddingVertical: 7,
+    borderRadius: 10,
+    borderWidth: 1,
+    borderColor: "#2d5a52",
+  },
+  cancelText: { color: "#5a7a72", fontSize: 13, fontWeight: "700" },
+  saveBtn: {
+    flexDirection: "row",
+    alignItems: "center",
+    gap: 4,
+    backgroundColor: theme.colors.accent,
+    paddingHorizontal: 14,
+    paddingVertical: 7,
+    borderRadius: 10,
+  },
+  saveText: { color: "white", fontSize: 13, fontWeight: "700" },
+
   identityCard: {
     flexDirection: "row",
     alignItems: "center",
@@ -349,20 +419,11 @@ const styles = StyleSheet.create({
     alignItems: "center",
     justifyContent: "center",
   },
-  avatarInitials: {
-    color: theme.colors.accent,
-    fontSize: 22,
-    fontWeight: "800",
-  },
+  avatarInitials: { color: theme.colors.accent, fontSize: 22, fontWeight: "800" },
   identityInfo: { flex: 1 },
   farmerName: { color: theme.colors.text, fontSize: 17, fontWeight: "800" },
   farmerSub: { color: "#3d6e64", fontSize: 12, marginTop: 1 },
-  verifiedRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 4,
-    marginTop: 6,
-  },
+  verifiedRow: { flexDirection: "row", alignItems: "center", gap: 4, marginTop: 6 },
   verifiedText: { color: "#44c2a8", fontSize: 11, fontWeight: "600" },
   planBadge: {
     backgroundColor: "rgba(68,194,168,0.15)",
@@ -372,19 +433,9 @@ const styles = StyleSheet.create({
     paddingVertical: 5,
     borderRadius: 8,
   },
-  planText: {
-    color: theme.colors.accent,
-    fontSize: 11,
-    fontWeight: "900",
-    letterSpacing: 1,
-  },
+  planText: { color: theme.colors.accent, fontSize: 11, fontWeight: "900", letterSpacing: 1 },
 
-  statsGrid: {
-    flexDirection: "row",
-    paddingHorizontal: 20,
-    gap: 10,
-    marginBottom: 20,
-  },
+  statsGrid: { flexDirection: "row", paddingHorizontal: 20, gap: 10, marginBottom: 20 },
   statCard: {
     flex: 1,
     backgroundColor: "#0c2b24",
@@ -404,13 +455,7 @@ const styles = StyleSheet.create({
     marginBottom: 4,
   },
   statValue: { color: theme.colors.text, fontSize: 13, fontWeight: "800" },
-  statLabel: {
-    color: "#3d6e64",
-    fontSize: 9,
-    fontWeight: "600",
-    textAlign: "center",
-    letterSpacing: 0.3,
-  },
+  statLabel: { color: "#3d6e64", fontSize: 9, fontWeight: "600", textAlign: "center", letterSpacing: 0.3 },
 
   section: { paddingHorizontal: 20, marginBottom: 20 },
   sectionTitle: {
@@ -428,12 +473,7 @@ const styles = StyleSheet.create({
     borderColor: "#123a32",
     overflow: "hidden",
   },
-  profileRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    padding: 14,
-    gap: 12,
-  },
+  profileRow: { flexDirection: "row", alignItems: "center", padding: 14, gap: 12 },
   rowBorder: { borderBottomWidth: 1, borderBottomColor: "#0f2e28" },
   rowIcon: {
     width: 32,
@@ -444,13 +484,17 @@ const styles = StyleSheet.create({
     justifyContent: "center",
   },
   rowContent: { flex: 1 },
-  rowLabel: {
-    color: "#3d6e64",
-    fontSize: 11,
-    fontWeight: "600",
-    marginBottom: 1,
-  },
+  rowLabel: { color: "#3d6e64", fontSize: 11, fontWeight: "600", marginBottom: 1 },
   rowValue: { color: theme.colors.text, fontSize: 14, fontWeight: "600" },
+  rowInput: {
+    color: theme.colors.text,
+    fontSize: 14,
+    fontWeight: "600",
+    borderBottomWidth: 1,
+    borderBottomColor: "rgba(68,194,168,0.4)",
+    paddingVertical: 2,
+    paddingHorizontal: 0,
+  },
 
   notifPrompt: {
     backgroundColor: "#0c2b24",
@@ -469,19 +513,8 @@ const styles = StyleSheet.create({
     justifyContent: "center",
     marginBottom: 14,
   },
-  notifPromptTitle: {
-    color: theme.colors.text,
-    fontSize: 17,
-    fontWeight: "700",
-    marginBottom: 6,
-  },
-  notifPromptSub: {
-    color: "#5a7a72",
-    fontSize: 13,
-    textAlign: "center",
-    lineHeight: 18,
-    marginBottom: 18,
-  },
+  notifPromptTitle: { color: theme.colors.text, fontSize: 17, fontWeight: "700", marginBottom: 6 },
+  notifPromptSub: { color: "#5a7a72", fontSize: 13, textAlign: "center", lineHeight: 18, marginBottom: 18 },
   enableBtn: {
     flexDirection: "row",
     alignItems: "center",
@@ -529,11 +562,7 @@ const styles = StyleSheet.create({
     paddingVertical: 8,
     borderRadius: 10,
   },
-  manageBtnText: {
-    color: theme.colors.accent,
-    fontSize: 13,
-    fontWeight: "700",
-  },
+  manageBtnText: { color: theme.colors.accent, fontSize: 13, fontWeight: "700" },
 
   dangerZone: {
     backgroundColor: "#1a0a0a",
@@ -542,20 +571,9 @@ const styles = StyleSheet.create({
     borderColor: "#3a1010",
     overflow: "hidden",
   },
-  dangerRow: {
-    flexDirection: "row",
-    alignItems: "center",
-    gap: 10,
-    padding: 16,
-  },
+  dangerRow: { flexDirection: "row", alignItems: "center", gap: 10, padding: 16 },
   dangerDivider: { height: 1, backgroundColor: "#3a1010" },
   dangerText: { color: "#ef5350", fontSize: 14, fontWeight: "600" },
 
-  version: {
-    color: "#1a3d35",
-    textAlign: "center",
-    fontSize: 11,
-    marginTop: -8,
-    marginBottom: 8,
-  },
+  version: { color: "#1a3d35", textAlign: "center", fontSize: 11, marginTop: -8, marginBottom: 8 },
 });

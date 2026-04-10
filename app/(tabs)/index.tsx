@@ -15,6 +15,7 @@ import {
 } from "react-native";
 import { getUserLocation } from "../../services/location";
 import { getWeather } from "../../services/weather";
+import { API_BASE } from "../../services/api";
 import { theme } from "../../theme";
 
 const { width } = Dimensions.get("window");
@@ -74,6 +75,12 @@ export default function Home() {
   const router = useRouter();
   const [weather, setWeather] = useState<any>(null);
   const [greeting, setGreeting] = useState("Good morning");
+  const [riskIndicators, setRiskIndicators] = useState([
+    { label: "Blight Risk", level: "Moderate", color: "#f9a825", pct: 0.54 },
+    { label: "Frost Risk", level: "Low", color: "#44c2a8", pct: 0.12 },
+    { label: "Drought Risk", level: "High", color: "#ef5350", pct: 0.82 },
+  ]);
+  const [activityFeed, setActivityFeed] = useState<any[]>([]);
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
 
@@ -98,8 +105,18 @@ export default function Home() {
     async function loadData() {
       try {
         const location = await getUserLocation();
-        const data = await getWeather(location.latitude, location.longitude);
+        const [data, risks, activity] = await Promise.all([
+          getWeather(location.latitude, location.longitude),
+          fetch(`${API_BASE}/risks?lat=${location.latitude}&lon=${location.longitude}`).then((r) => r.json()),
+          fetch(`${API_BASE}/activity`).then((r) => r.json()),
+        ]);
         setWeather(data);
+        setRiskIndicators([
+          { label: "Blight Risk", level: risks.blight_pct > 60 ? "High" : risks.blight_pct > 30 ? "Moderate" : "Low", color: risks.blight_pct > 60 ? "#ef5350" : "#f9a825", pct: risks.blight_pct / 100 },
+          { label: "Frost Risk", level: risks.frost_pct > 60 ? "High" : risks.frost_pct > 30 ? "Moderate" : "Low", color: risks.frost_pct > 60 ? "#ef5350" : "#44c2a8", pct: risks.frost_pct / 100 },
+          { label: "Drought Risk", level: risks.drought === "High" ? "High" : risks.drought === "Medium" ? "Moderate" : "Low", color: risks.drought === "High" ? "#ef5350" : "#f9a825", pct: risks.drought_pct / 100 },
+        ]);
+        setActivityFeed(activity);
       } catch (e) {
         console.log(e);
       }
@@ -173,7 +190,7 @@ export default function Home() {
         <View style={styles.section}>
           <SectionHeader title="Risk Overview" action="View All" />
           <View style={styles.riskCard}>
-            {RISK_INDICATORS.map((r, i) => (
+            {riskIndicators.map((r, i) => (
               <RiskBar key={i} {...r} />
             ))}
           </View>
@@ -198,30 +215,16 @@ export default function Home() {
         <View style={styles.section}>
           <SectionHeader title="Today's Summary" />
           <View style={styles.summaryCard}>
-            <SummaryRow
-              icon="checkmark-circle"
-              color="#44c2a8"
-              label="Sensor check completed"
-              time="06:30 AM"
-            />
-            <SummaryRow
-              icon="warning"
-              color="#f9a825"
-              label="Moderate blight risk detected"
-              time="08:15 AM"
-            />
-            <SummaryRow
-              icon="flask"
-              color="#42a5f5"
-              label="Soil N-P-K within safe range"
-              time="09:00 AM"
-            />
-            <SummaryRow
-              icon="notifications"
-              color="#ef5350"
-              label="Spray reminder scheduled"
-              time="10:30 AM"
-            />
+            {activityFeed.length > 0 ? activityFeed.map((item, i) => (
+              <SummaryRow key={i} icon={item.icon} color={item.color} label={item.label} time={item.time} />
+            )) : (
+              <>
+                <SummaryRow icon="checkmark-circle" color="#44c2a8" label="Sensor check completed" time="06:30 AM" />
+                <SummaryRow icon="warning" color="#f9a825" label="Moderate blight risk detected" time="08:15 AM" />
+                <SummaryRow icon="flask" color="#42a5f5" label="Soil N-P-K within safe range" time="09:00 AM" />
+                <SummaryRow icon="notifications" color="#ef5350" label="Spray reminder scheduled" time="10:30 AM" />
+              </>
+            )}
           </View>
         </View>
 

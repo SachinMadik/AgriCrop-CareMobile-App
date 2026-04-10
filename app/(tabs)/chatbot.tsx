@@ -13,6 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
+import { API_BASE } from "../../services/api";
 import { theme } from "../../theme";
 
 interface Message {
@@ -21,16 +22,6 @@ interface Message {
   text: string;
   timestamp: Date;
 }
-
-const SYSTEM_PROMPT = `You are CropGuard AI, an expert agricultural assistant specializing in:
-- Crop disease diagnosis and prevention (tomatoes, rice, wheat, and other common crops)
-- Weather-based farming recommendations
-- Soil health and nutrient management
-- Pest control and integrated pest management
-- Irrigation scheduling
-- Harvest timing and post-harvest management
-
-Be concise, practical, and evidence-based. Format responses clearly. Always consider the farmer's local context.`;
 
 const SUGGESTIONS = [
   "What are signs of tomato late blight?",
@@ -73,22 +64,24 @@ export default function Chatbot() {
         .filter((m) => m.id !== "welcome")
         .map((m) => ({ role: m.role, content: m.text }));
 
-      const res = await fetch("https://api.anthropic.com/v1/messages", {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
+
+      const res = await fetch(`${API_BASE}/chat`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          model: "claude-sonnet-4-20250514",
-          max_tokens: 1000,
-          system: SYSTEM_PROMPT,
-          messages:
-            history.length > 0 ? history : [{ role: "user", content: msg }],
-        }),
+        body: JSON.stringify({ messages: history.length > 0 ? history : [{ role: "user", content: msg }] }),
+        signal: controller.signal,
       });
+      clearTimeout(timeout);
+
+      if (!res.ok) {
+        const errData = await res.json().catch(() => ({}));
+        throw new Error(errData.error ?? `Server error ${res.status}`);
+      }
 
       const data = await res.json();
-      const reply =
-        data.content?.[0]?.text ??
-        "Sorry, I couldn't process that. Please try again.";
+      const reply = data.reply ?? "Sorry, I couldn't process that. Please try again.";
 
       setMessages((prev) => [
         ...prev,
@@ -99,13 +92,19 @@ export default function Chatbot() {
           timestamp: new Date(),
         },
       ]);
-    } catch {
+    } catch (e: any) {
+      const errorText = e?.name === "AbortError"
+        ? "Request timed out. The server may be slow — please try again."
+        : e?.message?.includes("Network request failed")
+        ? "Cannot reach the server. Make sure the backend is running on the same WiFi."
+        : "Something went wrong. Please try again.";
+
       setMessages((prev) => [
         ...prev,
         {
           id: (Date.now() + 1).toString(),
           role: "assistant",
-          text: "I'm having trouble connecting. Please check your internet connection and try again.",
+          text: errorText,
           timestamp: new Date(),
         },
       ]);
@@ -267,7 +266,7 @@ export default function Chatbot() {
             </TouchableOpacity>
           </View>
           <Text style={styles.disclaimer}>
-            Powered by Claude · Responses are advisory only
+            Powered by Mistral AI · Responses are advisory only
           </Text>
         </View>
       </KeyboardAvoidingView>

@@ -12,8 +12,8 @@ import {
 } from "react-native";
 import { BarChart, LineChart } from "react-native-chart-kit";
 import { getUserLocation } from "../../services/location";
-import { calculateRisks } from "../../services/risk";
-import { getWeather } from "../../services/weather";
+import { getRisks } from "../../services/risk";
+import { getWeather, getForecast } from "../../services/weather";
 import { theme } from "../../theme";
 
 const { width } = Dimensions.get("window");
@@ -221,25 +221,19 @@ function StatCard({
   );
 }
 
-/* ─── 7-Day Forecast Strip ─── */
-const MOCK_FORECAST = [
-  { day: "Mon", icon: "sunny", high: 32, low: 22 },
-  { day: "Tue", icon: "partly-sunny", high: 29, low: 20 },
-  { day: "Wed", icon: "rainy", high: 25, low: 18 },
-  { day: "Thu", icon: "thunderstorm", high: 23, low: 17 },
-  { day: "Fri", icon: "cloudy", high: 27, low: 19 },
-  { day: "Sat", icon: "sunny", high: 31, low: 21 },
-  { day: "Sun", icon: "partly-sunny", high: 30, low: 20 },
-];
-
-function ForecastStrip() {
+function ForecastStrip({ forecast }: { forecast: any[] }) {
+  const data = forecast.length > 0 ? forecast : [
+    { day: "Mon", icon: "sunny", high: 32, low: 22 },
+    { day: "Tue", icon: "partly-sunny", high: 29, low: 20 },
+    { day: "Wed", icon: "rainy", high: 25, low: 18 },
+    { day: "Thu", icon: "thunderstorm", high: 23, low: 17 },
+    { day: "Fri", icon: "cloudy", high: 27, low: 19 },
+    { day: "Sat", icon: "sunny", high: 31, low: 21 },
+    { day: "Sun", icon: "partly-sunny", high: 30, low: 20 },
+  ];
   return (
-    <ScrollView
-      horizontal
-      showsHorizontalScrollIndicator={false}
-      style={{ marginTop: 4 }}
-    >
-      {MOCK_FORECAST.map((f, i) => (
+    <ScrollView horizontal showsHorizontalScrollIndicator={false} style={{ marginTop: 4 }}>
+      {data.map((f, i) => (
         <View key={i} style={styles.forecastItem}>
           <Text style={styles.forecastDay}>{f.day}</Text>
           <Ionicons
@@ -332,6 +326,7 @@ function AIAdvisory({
 export default function Dashboard() {
   const [weather, setWeather] = useState<WeatherData | null>(null);
   const [risks, setRisks] = useState<RiskData | null>(null);
+  const [forecast, setForecast] = useState<any[]>([]);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
   const [lastUpdated, setLastUpdated] = useState<Date | null>(null);
@@ -342,9 +337,14 @@ export default function Dashboard() {
   async function loadData() {
     try {
       const location = await getUserLocation();
-      const data = await getWeather(location.latitude, location.longitude);
+      const [data, risksData, forecastData] = await Promise.all([
+        getWeather(location.latitude, location.longitude),
+        getRisks(location.latitude, location.longitude),
+        getForecast(location.latitude, location.longitude),
+      ]);
       setWeather(data);
-      setRisks(calculateRisks(data));
+      setRisks(risksData);
+      setForecast(forecastData);
       setLastUpdated(new Date());
     } catch (e) {
       console.log(e);
@@ -461,7 +461,7 @@ export default function Dashboard() {
           loading={loading}
         />
         <StatCard
-          icon="wind"
+          icon="speedometer"
           label="Wind"
           value={weather?.windSpeed ?? 0}
           suffix=" km/h"
@@ -552,7 +552,7 @@ export default function Dashboard() {
       <View style={styles.section}>
         <Text style={styles.sectionTitle}>7-Day Forecast</Text>
         <View style={styles.forecastCard}>
-          <ForecastStrip />
+          <ForecastStrip forecast={forecast} />
         </View>
       </View>
 
