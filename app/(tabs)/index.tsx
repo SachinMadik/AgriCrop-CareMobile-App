@@ -15,7 +15,10 @@ import {
 } from "react-native";
 import { getUserLocation } from "../../services/location";
 import { getWeather } from "../../services/weather";
-import { API_BASE } from "../../services/api";
+import { getRisks } from "../../services/risk";
+import { api } from "../../services/api";
+import { mockActivity } from "../../services/mockData";
+import { getProfile } from "../../services/profile";
 import { theme } from "../../theme";
 
 const { width } = Dimensions.get("window");
@@ -81,6 +84,7 @@ export default function Home() {
     { label: "Drought Risk", level: "High", color: "#ef5350", pct: 0.82 },
   ]);
   const [activityFeed, setActivityFeed] = useState<any[]>([]);
+  const [userName, setUserName] = useState("Farmer");
   const fadeAnim = useRef(new Animated.Value(0)).current;
   const slideAnim = useRef(new Animated.Value(30)).current;
 
@@ -105,10 +109,12 @@ export default function Home() {
     async function loadData() {
       try {
         const location = await getUserLocation();
+        const profile = await getProfile().catch(() => null);
+        if (profile?.name) setUserName(profile.name.split(" ")[0]);
         const [data, risks, activity] = await Promise.all([
           getWeather(location.latitude, location.longitude),
-          fetch(`${API_BASE}/risks?lat=${location.latitude}&lon=${location.longitude}`).then((r) => r.json()),
-          fetch(`${API_BASE}/activity`).then((r) => r.json()),
+          getRisks(location.latitude, location.longitude),
+          api.get("/activity").then((r) => r.data).catch(() => mockActivity),
         ]);
         setWeather(data);
         setRiskIndicators([
@@ -143,7 +149,7 @@ export default function Home() {
               transform: [{ translateY: slideAnim }],
             }}
           >
-            <Text style={styles.greeting}>{greeting}, Rajan 👋</Text>
+            <Text style={styles.greeting}>{greeting}, {userName} 👋</Text>
             <Text style={styles.appTitle}>CropGuard AI</Text>
             <Text style={styles.heroSub}>
               Smart environmental intelligence for modern farming

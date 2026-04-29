@@ -1,15 +1,24 @@
-import { API_BASE } from "./api";
+import { api, fetchWithRetry } from "./api";
+import { mockWeather, mockForecast } from "./mockData";
 
 export async function getWeather(lat: number, lon: number) {
-  const response = await fetch(`${API_BASE}/weather?lat=${lat}&lon=${lon}`);
-  if (!response.ok) throw new Error("Failed to fetch weather data");
-  return response.json();
+  try {
+    return await fetchWithRetry(() =>
+      api.get(`/weather?lat=${lat}&lon=${lon}`).then((r) => r.data)
+    );
+  } catch {
+    console.log("[weather] API failed — using offline data");
+    return mockWeather;
+  }
 }
 
 export async function getForecast(lat: number, lon: number) {
-  const response = await fetch(
-    `${API_BASE}/weather/forecast?lat=${lat}&lon=${lon}`,
-  );
-  if (!response.ok) throw new Error("Failed to fetch forecast data");
-  return response.json();
+  try {
+    return await fetchWithRetry(() =>
+      api.get(`/weather/forecast?lat=${lat}&lon=${lon}`).then((r) => r.data)
+    );
+  } catch {
+    console.log("[forecast] API failed — using offline data");
+    return mockForecast;
+  }
 }

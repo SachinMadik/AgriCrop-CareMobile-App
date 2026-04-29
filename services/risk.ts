@@ -1,7 +1,13 @@
-import { API_BASE } from "./api";
+import { api, fetchWithRetry } from "./api";
+import { mockRisks } from "./mockData";
 
 export async function getRisks(lat: number, lon: number) {
-  const response = await fetch(`${API_BASE}/risks?lat=${lat}&lon=${lon}`);
-  if (!response.ok) throw new Error("Failed to fetch risk data");
-  return response.json();
+  try {
+    return await fetchWithRetry(() =>
+      api.get(`/risks?lat=${lat}&lon=${lon}`).then((r) => r.data)
+    );
+  } catch {
+    console.log("[risks] API failed — using offline data");
+    return mockRisks;
+  }
 }

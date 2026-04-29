@@ -1,4 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
+import * as Print from "expo-print";
+import * as Sharing from "expo-sharing";
 import * as Location from "expo-location";
 import { useEffect, useRef, useState } from "react";
 import {
@@ -15,7 +17,8 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { API_BASE } from "../../services/api";
+import { api } from "../../services/api";
+import { getSoilNutrients, getSoilHealthScore, getSoilTrend, getSoilRecommendations } from "../../services/soil";
 import { theme } from "../../theme";
 
 type Status = "SAFE" | "WARNING" | "CRITICAL" | "LOW";
@@ -70,13 +73,13 @@ export default function Soil() {
     async function load() {
       try {
         const [n, h, t, r] = await Promise.all([
-          fetch(`${API_BASE}/soil`).then((r) => r.json()),
-          fetch(`${API_BASE}/soil/health-score`).then((r) => r.json()),
-          fetch(`${API_BASE}/soil/trend`).then((r) => r.json()),
-          fetch(`${API_BASE}/soil/recommendations`).then((r) => r.json()),
+          getSoilNutrients(),
+          getSoilHealthScore(),
+          getSoilTrend(),
+          getSoilRecommendations(),
         ]);
         setNutrients(n);
-        setHealthScore(h.score ?? 0);
+        setHealthScore((h as any).score ?? h ?? 0);
         setTrend(t);
         setRecommendations(r);
       } catch (e) {
@@ -88,8 +91,7 @@ export default function Soil() {
 
   async function runSoilTest() {
     try {
-      const res = await fetch(`${API_BASE}/soil/test`, { method: "POST" });
-      const data = await res.json();
+      const { data } = await api.post("/soil/test");
       Alert.alert("Soil Test", data.message);
     } catch (e) {
       Alert.alert("Error", "Could not trigger soil test.");
@@ -114,20 +116,14 @@ export default function Soil() {
         return;
       }
       const loc = await Location.getCurrentPositionAsync({});
-      const res = await fetch(`${API_BASE}/leaching-report`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
+      const { data } = await api.post("/leaching-report", {
           latitude: loc.coords.latitude,
           longitude: loc.coords.longitude,
           cropType: "tomato",
           soilType: "sandy loam",
           season: "kharif",
           fieldSize: "4.2 ha",
-        }),
       });
-      if (!res.ok) throw new Error(`HTTP ${res.status}`);
-      const data = await res.json();
       setLeachingReport(data);
       setShowLeaching(true);
     } catch (e) {
@@ -138,6 +134,59 @@ export default function Soil() {
     }
   }
 
+
+  async function downloadPDF() {
+    if (!leachingReport) return;
+    try {
+      const html = `
+        <html><head><style>
+          body { font-family: Arial, sans-serif; padding: 24px; color: #1a1a1a; }
+          h1 { color: #1b5e20; font-size: 22px; margin-bottom: 4px; }
+          h2 { color: #2e7d32; font-size: 16px; margin-top: 20px; border-bottom: 1px solid #ccc; padding-bottom: 4px; }
+          .badge { display: inline-block; padding: 4px 12px; border-radius: 12px; font-weight: bold; font-size: 13px; }
+          .high { background: #ffebee; color: #c62828; }
+          .medium { background: #fff8e1; color: #f57f17; }
+          .low { background: #e8f5e9; color: #2e7d32; }
+          table { width: 100%; border-collapse: collapse; margin-top: 8px; }
+          td, th { padding: 8px 12px; border: 1px solid #e0e0e0; font-size: 13px; }
+          th { background: #f5f5f5; font-weight: bold; }
+          .rec { background: #f9f9f9; border-left: 4px solid #2e7d32; padding: 10px 14px; margin: 8px 0; border-radius: 4px; }
+          .footer { margin-top: 32px; color: #888; font-size: 11px; text-align: center; }
+        </style></head><body>
+          <h1>🌱 CropGuard Soil Intelligence Report</h1>
+          <p style="color:#666;font-size:13px;">Generated: ${new Date().toLocaleString()} &nbsp;|&nbsp; Crop: ${leachingReport.inputs?.cropType ?? 'N/A'} &nbsp;|&nbsp; Soil: ${leachingReport.inputs?.soilType ?? 'N/A'}</p>
+          <h2>Nutrient Leaching Risk</h2>
+          <p>Risk Score: <strong>${leachingReport.riskScore}/100</strong> &nbsp; <span class="${leachingReport.riskLevel}">${leachingReport.riskLevel?.toUpperCase()}</span></p>
+          <table>
+            <tr><th>Nutrient</th><th>Estimated Loss</th></tr>
+            <tr><td>Nitrogen (N)</td><td>${leachingReport.nitrogenLossPercent}%</td></tr>
+            <tr><td>Phosphorus (P)</td><td>${leachingReport.phosphorusLossPercent}%</td></tr>
+            <tr><td>Potassium (K)</td><td>${leachingReport.potassiumLossPercent}%</td></tr>
+          </table>
+          <h2>Weather Conditions</h2>
+          <table>
+            <tr><th>Parameter</th><th>Value</th></tr>
+            <tr><td>Rainfall</td><td>${leachingReport.weather?.rainfall ?? 0} mm</td></tr>
+            <tr><td>Temperature</td><td>${leachingReport.weather?.temperature ?? 0}°C</td></tr>
+            <tr><td>Humidity</td><td>${leachingReport.weather?.humidity ?? 0}%</td></tr>
+          </table>
+          <h2>Recommendations</h2>
+          ${(leachingReport.recommendations ?? []).map((r: any) => `<div class="rec"><strong>${r.category}</strong> [${r.priority}]<br/>${r.action}<br/><small style="color:#666">${r.detail}</small></div>`).join('')}
+          <div class="footer">CropGuard AI · Soil Intelligence Report · ${new Date().getFullYear()}</div>
+        </body></html>
+      `;
+      const { uri } = await Print.printToFileAsync({ html, base64: false });
+      if (await Sharing.isAvailableAsync()) {
+        await Sharing.shareAsync(uri, { mimeType: "application/pdf", dialogTitle: "Save Soil Report" });
+      } else {
+        Alert.alert("Saved", `Report saved to: ${uri}`);
+      }
+    } catch (e) {
+      console.log("PDF error", e);
+      Alert.alert("Error", "Could not generate PDF.");
+    }
+  }
+
   async function reload() {
     setNutrients([]);
     setHealthScore(0);
@@ -145,10 +194,10 @@ export default function Soil() {
     setRecommendations([]);
     try {
       const [n, h, t, r] = await Promise.all([
-        fetch(`${API_BASE}/soil`).then((r) => r.json()),
-        fetch(`${API_BASE}/soil/health-score`).then((r) => r.json()),
-        fetch(`${API_BASE}/soil/trend`).then((r) => r.json()),
-        fetch(`${API_BASE}/soil/recommendations`).then((r) => r.json()),
+        getSoilNutrients(),
+        getSoilHealthScore(),
+        getSoilTrend(),
+        getSoilRecommendations(),
       ]);
       setNutrients(n);
       setHealthScore(h.score ?? 0);
@@ -282,7 +331,7 @@ export default function Soil() {
         <View style={lStyles.sheet}>
           <View style={lStyles.handle} />
           <ScrollView showsVerticalScrollIndicator={false}>
-            {leachingReport && <LeachingReportView report={leachingReport} onClose={() => setShowLeaching(false)} />}
+            {leachingReport && <LeachingReportView report={leachingReport} onClose={() => setShowLeaching(false)} onDownload={downloadPDF} />}
           </ScrollView>
         </View>
       </Modal>
@@ -689,7 +738,7 @@ const RISK_BG: Record<string, string> = {
   low: "#0f2e14",
 };
 
-function LeachingReportView({ report, onClose }: { report: any; onClose: () => void }) {
+function LeachingReportView({ report, onClose, onDownload }: { report: any; onClose: () => void; onDownload: () => void }) {
   const riskColor = RISK_COLOR[report.riskLevel] ?? "#66bb6a";
   const riskBg    = RISK_BG[report.riskLevel]    ?? "#0f2e14";
 
@@ -701,9 +750,19 @@ function LeachingReportView({ report, onClose }: { report: any; onClose: () => v
           <Text style={lStyles.title}>Leaching Report</Text>
           <Text style={lStyles.subtitle}>{report.inputs?.cropType} · {report.inputs?.soilType} · {report.inputs?.season}</Text>
         </View>
-        <TouchableOpacity onPress={onClose} activeOpacity={0.7}>
-          <Ionicons name="close-circle" size={26} color="#3d6e64" />
-        </TouchableOpacity>
+        <View style={{ flexDirection: "row", alignItems: "center", gap: 10 }}>
+          <TouchableOpacity
+            onPress={onDownload}
+            activeOpacity={0.7}
+            style={{ flexDirection: "row", alignItems: "center", gap: 5, backgroundColor: "rgba(68,194,168,0.12)", borderWidth: 1, borderColor: "rgba(68,194,168,0.3)", paddingHorizontal: 12, paddingVertical: 7, borderRadius: 10 }}
+          >
+            <Ionicons name="download-outline" size={16} color="#44c2a8" />
+            <Text style={{ color: "#44c2a8", fontSize: 12, fontWeight: "700" }}>Download PDF</Text>
+          </TouchableOpacity>
+          <TouchableOpacity onPress={onClose} activeOpacity={0.7}>
+            <Ionicons name="close-circle" size={26} color="#3d6e64" />
+          </TouchableOpacity>
+        </View>
       </View>
 
       {/* Risk Score Card */}

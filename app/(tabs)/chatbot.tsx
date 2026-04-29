@@ -13,7 +13,7 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { API_BASE } from "../../services/api";
+import { sendChat } from "../../services/chat";
 import { theme } from "../../theme";
 
 interface Message {
@@ -64,23 +64,8 @@ export default function Chatbot() {
         .filter((m) => m.id !== "welcome")
         .map((m) => ({ role: m.role, content: m.text }));
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 15000); // 15s timeout
-
-      const res = await fetch(`${API_BASE}/chat`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ messages: history.length > 0 ? history : [{ role: "user", content: msg }] }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeout);
-
-      if (!res.ok) {
-        const errData = await res.json().catch(() => ({}));
-        throw new Error(errData.error ?? `Server error ${res.status}`);
-      }
-
-      const data = await res.json();
+      const messages_to_send = history.length > 0 ? history : [{ role: "user", content: msg }];
+      const data = await sendChat(messages_to_send);
       const reply = data.reply ?? "Sorry, I couldn't process that. Please try again.";
 
       setMessages((prev) => [

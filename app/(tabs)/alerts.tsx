@@ -1,6 +1,6 @@
 import { Ionicons } from "@expo/vector-icons";
 import * as Location from "expo-location";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, useCallback } from "react";
 import {
   ActivityIndicator,
   Alert,
@@ -17,7 +17,9 @@ import {
   TouchableOpacity,
   View,
 } from "react-native";
-import { API_BASE } from "../../services/api";
+import { api } from "../../services/api";
+import { sendAlertNotification, requestNotificationPermission } from "../../services/notifications";
+import { getAlerts, acknowledgeAlert, acknowledgeAll as acknowledgeAllApi, runRiskCheck as runRiskCheckApi, getReminders, createReminder, markReminderDone as markReminderDoneApi, deleteReminder as deleteReminderApi } from "../../services/alerts";
 import { theme } from "../../theme";
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -78,6 +80,8 @@ export default function Alerts() {
   const [activeFilter, setActiveFilter] = useState<FilterKey>("ALL");
   const [loading, setLoading] = useState(true);
   const [checking, setChecking] = useState(false);
+  const [banner, setBanner] = useState<FarmAlert | null>(null);
+  const bannerAnim = useRef(new Animated.Value(-80)).current;
   const [weather, setWeather] = useState<WeatherSnap | null>(null);
 
   // Farm context
@@ -98,8 +102,7 @@ export default function Alerts() {
   async function fetchAlerts() {
     setLoading(true);
     try {
-      const res = await fetch(`${API_BASE}/alerts`);
-      const data = await res.json();
+      const data = await getAlerts();
       setAlerts(Array.isArray(data) ? data : []);
     } catch (e) {
       console.log("Fetch alerts error", e);
@@ -108,10 +111,20 @@ export default function Alerts() {
     }
   }
 
+
+  function showBanner(alert: FarmAlert) {
+    setBanner(alert);
+    bannerAnim.setValue(-80);
+    Animated.sequence([
+      Animated.spring(bannerAnim, { toValue: 0, useNativeDriver: true, tension: 80, friction: 8 }),
+      Animated.delay(4000),
+      Animated.timing(bannerAnim, { toValue: -80, duration: 300, useNativeDriver: true }),
+    ]).start(() => setBanner(null));
+  }
+
   async function fetchReminders() {
     try {
-      const res = await fetch(`${API_BASE}/reminders`);
-      const data = await res.json();
+      const data = await getReminders();
       setReminders(Array.isArray(data) ? data : []);
     } catch (e) {
       console.log("Fetch reminders error", e);
@@ -133,22 +146,24 @@ export default function Alerts() {
         Alert.alert("Permission Denied", "Location permission is needed to check local weather risks.");
         return;
       }
-      const loc = await Location.getCurrentPositionAsync({});
-      const res = await fetch(`${API_BASE}/alerts/risk-check`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          lat: loc.coords.latitude,
-          lon: loc.coords.longitude,
-          cropType,
-          season,
-        }),
-      });
-      const data = await res.json();
+      const loc = await Location.getCurrentPositionAsync({  notifBanner: {
+    position: "absolute", top: 0, left: 0, right: 0, zIndex: 999,
+    flexDirection: "row", alignItems: "center", gap: 10,
+    backgroundColor: "#0c2b24", borderLeftWidth: 4, borderLeftColor: "#f9a825",
+    paddingHorizontal: 16, paddingVertical: 14,
+    paddingTop: Platform.OS === "ios" ? 52 : 14,
+    shadowColor: "#000", shadowOffset: { width: 0, height: 4 },
+    shadowOpacity: 0.3, shadowRadius: 8, elevation: 10,
+  },
+  bannerTitle: { color: "white", fontSize: 13, fontWeight: "700" },
+  bannerSub: { color: "#5a7a72", fontSize: 11, marginTop: 1 },
+});
+      const data = await runRiskCheckApi({ lat: loc.coords.latitude, lon: loc.coords.longitude, cropType, season }) ?? {};
       if (data.weather) setWeather(data.weather);
       if (Array.isArray(data.alerts) && data.alerts.length > 0) {
         setAlerts((prev) => [...data.alerts, ...prev]);
         Alert.alert("Risk Check Complete", `${data.alerts.length} new alert${data.alerts.length > 1 ? "s" : ""} generated.`);
+        for (const a of data.alerts) { sendAlertNotification(a).catch(() => {}); }
       } else {
         Alert.alert("All Clear", "No significant risks detected for your current conditions.");
       }
@@ -164,15 +179,14 @@ export default function Alerts() {
 
   async function acknowledge(id: string) {
     try {
-      const res = await fetch(`${API_BASE}/alerts/${id}/acknowledge`, { method: "PATCH" });
-      const updated = await res.json();
-      setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updated } : a)));
+      const updated = await acknowledgeAlert(id);
+      if (updated) setAlerts((prev) => prev.map((a) => (a.id === id ? { ...a, ...updated } : a)));
     } catch (e) { console.log(e); }
   }
 
   async function acknowledgeAll() {
     try {
-      await fetch(`${API_BASE}/alerts/acknowledge-all`, { method: "POST" });
+      await acknowledgeAllApi();
       setAlerts((prev) => prev.map((a) => ({ ...a, acknowledged: true })));
     } catch (e) { console.log(e); }
   }
@@ -181,18 +195,13 @@ export default function Alerts() {
 
   async function saveReminder() {
     if (!reminderTitle.trim() || !reminderDate.trim() || !reminderTime.trim()) {
-      Alert.alert("Required", "Please fill in title, date and time.");
+      Alert.alert("Required", "Please enter a title and select a date and time.");
       return;
     }
     setSavingReminder(true);
     try {
       const datetime = `${reminderDate.trim()} ${reminderTime.trim()}`;
-      const res = await fetch(`${API_BASE}/reminders`, {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ title: reminderTitle.trim(), datetime, note: reminderNote.trim() }),
-      });
-      const created = await res.json();
+      const created = await createReminder({ title: reminderTitle.trim(), datetime, note: reminderNote.trim() });
       setReminders((prev) => [...prev, created]);
       setShowReminderForm(false);
       setReminderTitle(""); setReminderDate(""); setReminderTime(""); setReminderNote("");
@@ -205,14 +214,14 @@ export default function Alerts() {
 
   async function markReminderDone(id: string) {
     try {
-      await fetch(`${API_BASE}/reminders/${id}/done`, { method: "PATCH" });
+      await markReminderDoneApi(id);
       setReminders((prev) => prev.map((r) => r.id === id ? { ...r, done: true } : r));
     } catch (e) { console.log(e); }
   }
 
   async function deleteReminder(id: string) {
     try {
-      await fetch(`${API_BASE}/reminders/${id}`, { method: "DELETE" });
+      await deleteReminderApi(id);
       setReminders((prev) => prev.filter((r) => r.id !== id));
     } catch (e) { console.log(e); }
   }
@@ -430,11 +439,29 @@ export default function Alerts() {
             <Text style={styles.fieldLabel}>Title *</Text>
             <TextInput style={styles.input} placeholder="e.g. Spray fungicide on Zone B" placeholderTextColor="#3d6e64" value={reminderTitle} onChangeText={setReminderTitle} />
 
-            <Text style={styles.fieldLabel}>Date * (DD/MM/YYYY)</Text>
-            <TextInput style={styles.input} placeholder="25/04/2026" placeholderTextColor="#3d6e64" value={reminderDate} onChangeText={setReminderDate} keyboardType="numeric" />
+            <Text style={styles.fieldLabel}>Date *</Text>
+            <View style={{ flexDirection: "row", gap: 8, marginBottom: 12 }}>
+              {[0,1,2,3,4,5,6].map((offset) => {
+                const d = new Date(); d.setDate(d.getDate() + offset);
+                const val = d.toISOString().split("T")[0];
+                const label = offset === 0 ? "Today" : offset === 1 ? "Tomorrow" : d.toLocaleDateString("en-IN", { weekday: "short", day: "numeric" });
+                const active = reminderDate === val;
+                return (
+                  <TouchableOpacity key={offset} style={[styles.chip, active && styles.chipActive, { flex: 1, alignItems: "center", paddingHorizontal: 4 }]} onPress={() => setReminderDate(val)}>
+                    <Text style={[styles.chipText, active && styles.chipTextActive, { fontSize: 10, textAlign: "center" }]}>{label}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </View>
 
-            <Text style={styles.fieldLabel}>Time * (HH:MM)</Text>
-            <TextInput style={styles.input} placeholder="08:00" placeholderTextColor="#3d6e64" value={reminderTime} onChangeText={setReminderTime} keyboardType="numeric" />
+            <Text style={styles.fieldLabel}>Time *</Text>
+            <View style={{ flexDirection: "row", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
+              {["06:00 AM","07:00 AM","08:00 AM","09:00 AM","12:00 PM","03:00 PM","05:00 PM","06:00 PM"].map((t) => (
+                <TouchableOpacity key={t} style={[styles.chip, reminderTime === t && styles.chipActive]} onPress={() => setReminderTime(t)}>
+                  <Text style={[styles.chipText, reminderTime === t && styles.chipTextActive]}>{t}</Text>
+                </TouchableOpacity>
+              ))}
+            </View>
 
             <Text style={styles.fieldLabel}>Note (optional)</Text>
             <TextInput style={[styles.input, { height: 70, textAlignVertical: "top" }]} placeholder="Additional details..." placeholderTextColor="#3d6e64" value={reminderNote} onChangeText={setReminderNote} multiline />
